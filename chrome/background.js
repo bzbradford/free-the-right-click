@@ -1,18 +1,31 @@
 // Service worker for Free the Right-Click.
 //
-// Owns the dynamic content-script registration. Reads the list of
-// per-site disabled hostnames from chrome.storage.local and (re)registers
-// the unblocker with excludeMatches set accordingly.
+// Owns the dynamic content-script registration. Reads trusted hosts from
+// chrome.storage.local and session-disabled hosts from chrome.storage.session,
+// then registers the unblocker with excludeMatches covering both.
 
 const SCRIPT_ID = "ftrc-unblocker";
-const STORAGE_KEY = "disabledHosts";
+const STORAGE_KEY = "trustedHosts";
+const SESSION_KEY = "sessionDisabledHosts";
 
-async function getDisabledHosts() {
+async function getTrustedHosts() {
   try {
     const result = await chrome.storage.local.get(STORAGE_KEY);
     const hosts = result[STORAGE_KEY];
     if (!Array.isArray(hosts)) return [];
-    // Sanity filter — only well-formed hostnames.
+    return hosts.filter(
+      (h) => typeof h === "string" && /^[a-z0-9.\-]+$/i.test(h),
+    );
+  } catch (_) {
+    return [];
+  }
+}
+
+async function getSessionDisabledHosts() {
+  try {
+    const result = await chrome.storage.session.get(SESSION_KEY);
+    const hosts = result[SESSION_KEY];
+    if (!Array.isArray(hosts)) return [];
     return hosts.filter(
       (h) => typeof h === "string" && /^[a-z0-9.\-]+$/i.test(h),
     );
@@ -26,8 +39,12 @@ function hostToExcludePatterns(host) {
 }
 
 async function syncRegistration() {
-  const hosts = await getDisabledHosts();
-  const excludeMatches = hosts.flatMap(hostToExcludePatterns);
+  const [trusted, session] = await Promise.all([
+    getTrustedHosts(),
+    getSessionDisabledHosts(),
+  ]);
+  const allExcluded = [...new Set([...trusted, ...session])];
+  const excludeMatches = allExcluded.flatMap(hostToExcludePatterns);
 
   const scriptDef = {
     id: SCRIPT_ID,
@@ -51,7 +68,6 @@ async function syncRegistration() {
       await chrome.scripting.registerContentScripts([scriptDef]);
     }
   } catch (e) {
-    // If update fails for any reason, fall back to unregister + register.
     console.warn("[FTRC] update failed, retrying with fresh register", e);
     try {
       await chrome.scripting.unregisterContentScripts({ ids: [SCRIPT_ID] });
@@ -73,7 +89,6 @@ async function initDefaultHosts() {
   }
 }
 
-// Re-sync on the lifecycle events that matter.
 chrome.runtime.onInstalled.addListener(async (details) => {
   if (details.reason === "install") {
     await initDefaultHosts();
@@ -82,9 +97,11 @@ chrome.runtime.onInstalled.addListener(async (details) => {
 });
 chrome.runtime.onStartup.addListener(syncRegistration);
 
-// Re-sync whenever the disabled list changes (popup writes to storage).
 chrome.storage.onChanged.addListener((changes, area) => {
-  if (area === "local" && changes[STORAGE_KEY]) {
+  if (
+    (area === "local" && changes[STORAGE_KEY]) ||
+    (area === "session" && changes[SESSION_KEY])
+  ) {
     syncRegistration();
   }
 });

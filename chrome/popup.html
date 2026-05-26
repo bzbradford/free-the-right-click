@@ -30,6 +30,9 @@
       * {
         box-sizing: border-box;
       }
+      [hidden] {
+        display: none !important;
+      }
       body {
         width: 340px;
         margin: 0;
@@ -150,6 +153,7 @@
         border-radius: 4px;
         padding: 4px 10px;
         cursor: pointer;
+        flex-shrink: 0;
       }
       .reload-btn:hover {
         filter: brightness(1.05);
@@ -161,30 +165,110 @@
         font-style: italic;
       }
 
+      /* Trusted domains section */
+      .section-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        margin-bottom: 8px;
+      }
       h2 {
         font-size: 11px;
         font-weight: 600;
         text-transform: uppercase;
         letter-spacing: 0.04em;
         color: var(--muted);
-        margin: 0 0 8px;
+        margin: 0;
       }
-      .disabled-list {
+      .add-btn {
+        background: transparent;
+        border: 1px solid var(--border);
+        color: var(--muted);
+        cursor: pointer;
+        font-size: 16px;
+        line-height: 1;
+        width: 22px;
+        height: 22px;
+        border-radius: 4px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 0 0 1px;
+      }
+      .add-btn:hover {
+        color: var(--fg);
+        border-color: var(--muted);
+      }
+      .add-row {
+        display: flex;
+        align-items: center;
+        gap: 4px;
+        margin-bottom: 6px;
+      }
+      .add-input {
+        flex: 1;
+        min-width: 0;
+        font: inherit;
+        font-size: 12px;
+        background: var(--bg);
+        color: var(--fg);
+        border: 1px solid var(--border);
+        border-radius: 4px;
+        padding: 4px 7px;
+        outline: none;
+      }
+      .add-input:focus {
+        border-color: var(--accent);
+      }
+      .add-input.invalid {
+        border-color: var(--danger);
+      }
+      .icon-btn {
+        background: transparent;
+        border: 1px solid var(--border);
+        cursor: pointer;
+        font-size: 13px;
+        line-height: 1;
+        width: 26px;
+        height: 26px;
+        border-radius: 4px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        flex-shrink: 0;
+        padding: 0;
+      }
+      .confirm-btn {
+        color: var(--accent);
+      }
+      .confirm-btn:hover {
+        background: var(--accent-soft);
+        border-color: var(--accent);
+      }
+      .cancel-btn {
+        color: var(--muted);
+      }
+      .cancel-btn:hover {
+        color: var(--danger);
+        border-color: var(--danger);
+      }
+
+      .trusted-list {
         max-height: 160px;
         overflow-y: auto;
         margin: 0 -4px;
       }
-      .disabled-item {
+      .trusted-item {
         display: flex;
         align-items: center;
         padding: 5px 8px 5px 6px;
         border-radius: 4px;
         font-size: 12px;
       }
-      .disabled-item:hover {
+      .trusted-item:hover {
         background: var(--row-hover);
       }
-      .disabled-item .host {
+      .trusted-item .host {
         flex: 1;
         min-width: 0;
         white-space: nowrap;
@@ -225,7 +309,7 @@
           <div class="site-host" id="current-host">—</div>
           <div class="site-state" id="current-state">—</div>
         </div>
-        <label class="toggle" title="Toggle for this site">
+        <label class="toggle" title="Pause for this session">
           <input type="checkbox" id="site-toggle" />
           <span class="slider"></span>
         </label>
@@ -240,8 +324,23 @@
     </section>
 
     <section>
-      <h2>Trusted domains</h2>
-      <div class="disabled-list" id="disabled-list"></div>
+      <div class="section-header">
+        <h2>Trusted Domains</h2>
+        <button id="add-btn" type="button" class="add-btn" title="Add trusted domain" aria-label="Add trusted domain">+</button>
+      </div>
+      <div id="add-row" class="add-row" hidden>
+        <input
+          type="text"
+          id="add-input"
+          class="add-input"
+          placeholder="example.com"
+          spellcheck="false"
+          autocomplete="off"
+        />
+        <button id="add-confirm" type="button" class="icon-btn confirm-btn" title="Add domain" aria-label="Confirm">✓</button>
+        <button id="add-cancel" type="button" class="icon-btn cancel-btn" title="Cancel" aria-label="Cancel">✕</button>
+      </div>
+      <div class="trusted-list" id="trusted-list"></div>
     </section>
 
     <script src="popup.js"></script>

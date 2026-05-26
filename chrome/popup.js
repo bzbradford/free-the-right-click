@@ -1,9 +1,10 @@
-// Popup script — reads the active tab, lets the user toggle the
-// extension on/off for that site, and manages the list of disabled
-// sites. Writes go to chrome.storage.local; the service worker picks
-// up the change and re-registers the content script.
+// Popup script — manages the current-tab session toggle and the permanent
+// trusted domains list. Session state lives in chrome.storage.session;
+// trusted hosts live in chrome.storage.local. The background service worker
+// picks up changes to either and re-registers the content script.
 
-const STORAGE_KEY = "disabledHosts";
+const STORAGE_KEY = "trustedHosts";
+const SESSION_KEY = "sessionDisabledHosts";
 
 const els = {
   row: document.getElementById("current-site-row"),
@@ -13,7 +14,12 @@ const els = {
   restricted: document.getElementById("restricted-msg"),
   reloadHint: document.getElementById("reload-hint"),
   reloadBtn: document.getElementById("reload-btn"),
-  list: document.getElementById("disabled-list"),
+  list: document.getElementById("trusted-list"),
+  addBtn: document.getElementById("add-btn"),
+  addRow: document.getElementById("add-row"),
+  addInput: document.getElementById("add-input"),
+  addConfirm: document.getElementById("add-confirm"),
+  addCancel: document.getElementById("add-cancel"),
 };
 
 let currentTab = null;
@@ -29,21 +35,53 @@ function hostnameFromUrl(url) {
   }
 }
 
-async function getDisabledHosts() {
+function sanitizeHostInput(raw) {
+  let h = raw.trim().toLowerCase();
+  h = h.replace(/^[a-z*]+:\/\//, ""); // strip protocol (http://, https://, *://)
+  h = h.replace(/^\*\./, "");          // strip leading *. — wildcard already applied
+  h = h.replace(/[/?#].*$/, "");       // strip path, query, fragment
+  h = h.replace(/:\d+$/, "");          // strip port
+  return h;
+}
+
+function isValidHost(h) {
+  return typeof h === "string" && h.length > 0 && /^[a-z0-9.\-]+$/i.test(h);
+}
+
+async function getTrustedHosts() {
   const result = await chrome.storage.local.get(STORAGE_KEY);
   const hosts = result[STORAGE_KEY];
   return Array.isArray(hosts) ? hosts.slice() : [];
 }
 
-async function setDisabledHosts(hosts) {
-  // Normalize: lowercase, dedupe, sorted.
+async function setTrustedHosts(hosts) {
   const cleaned = Array.from(
     new Set(hosts.map((h) => String(h).toLowerCase().trim()).filter(Boolean)),
   ).sort();
   await chrome.storage.local.set({ [STORAGE_KEY]: cleaned });
 }
 
-function renderCurrentSite(host, isDisabled) {
+async function getSessionDisabledHosts() {
+  const result = await chrome.storage.session.get(SESSION_KEY);
+  const hosts = result[SESSION_KEY];
+  return Array.isArray(hosts) ? hosts.slice() : [];
+}
+
+async function setSessionDisabledHosts(hosts) {
+  const cleaned = Array.from(
+    new Set(hosts.map((h) => String(h).toLowerCase().trim()).filter(Boolean)),
+  ).sort();
+  await chrome.storage.session.set({ [SESSION_KEY]: cleaned });
+}
+
+// Returns true if host matches a trusted entry (exact or subdomain of entry).
+function isTrustedHost(host, trustedHosts) {
+  return trustedHosts.some(
+    (h) => host === h || host.endsWith("." + h),
+  );
+}
+
+function renderCurrentSite(host, trusted, sessionDisabled) {
   if (!host) {
     els.row.hidden = true;
     els.restricted.hidden = false;
@@ -52,9 +90,23 @@ function renderCurrentSite(host, isDisabled) {
   els.restricted.hidden = true;
   els.row.hidden = false;
   els.host.textContent = host;
-  els.toggle.checked = !isDisabled; // toggle = "active on this site"
-  els.state.textContent = isDisabled ? "Disabled here" : "Active here";
-  els.state.classList.toggle("state-on", !isDisabled);
+
+  if (trusted) {
+    els.toggle.checked = false;
+    els.toggle.disabled = true;
+    els.state.textContent = "Trusted domain";
+    els.state.className = "site-state";
+  } else if (sessionDisabled) {
+    els.toggle.checked = false;
+    els.toggle.disabled = false;
+    els.state.textContent = "Paused this session";
+    els.state.className = "site-state";
+  } else {
+    els.toggle.checked = true;
+    els.toggle.disabled = false;
+    els.state.textContent = "Active here";
+    els.state.className = "site-state state-on";
+  }
 }
 
 function renderList(hosts) {
@@ -62,28 +114,27 @@ function renderList(hosts) {
   if (!hosts.length) {
     const empty = document.createElement("div");
     empty.className = "empty";
-    empty.textContent = "None — the extension runs everywhere.";
+    empty.textContent = "No trusted domains.";
     els.list.appendChild(empty);
     return;
   }
   for (const host of hosts) {
     const row = document.createElement("div");
-    row.className = "disabled-item";
+    row.className = "trusted-item";
 
-    const hostLabel = `*.${host}/*`;
     const label = document.createElement("span");
     label.className = "host";
-    label.textContent = hostLabel;
-    label.title = hostLabel;
+    label.textContent = host;
+    label.title = host;
     row.appendChild(label);
 
     const btn = document.createElement("button");
     btn.className = "remove-btn";
     btn.type = "button";
     btn.textContent = "×";
-    btn.title = `Re-enable on ${hostLabel}`;
-    btn.setAttribute("aria-label", `Re-enable on ${hostLabel}`);
-    btn.addEventListener("click", () => removeHost(host));
+    btn.title = `Remove ${host}`;
+    btn.setAttribute("aria-label", `Remove ${host}`);
+    btn.addEventListener("click", () => removeTrustedHost(host));
     row.appendChild(btn);
 
     els.list.appendChild(row);
@@ -91,59 +142,95 @@ function renderList(hosts) {
 }
 
 async function refresh() {
-  const hosts = await getDisabledHosts();
-  renderList(hosts);
-  const isDisabled = currentHost ? hosts.includes(currentHost) : false;
-  renderCurrentSite(currentHost, isDisabled);
+  const [trusted, session] = await Promise.all([
+    getTrustedHosts(),
+    getSessionDisabledHosts(),
+  ]);
+  renderList(trusted);
+  renderCurrentSite(
+    currentHost,
+    currentHost ? isTrustedHost(currentHost, trusted) : false,
+    currentHost ? session.includes(currentHost) : false,
+  );
 }
 
 async function onToggle() {
   if (!currentHost) return;
   const wantActive = els.toggle.checked;
-  const hosts = await getDisabledHosts();
+  const hosts = await getSessionDisabledHosts();
   const idx = hosts.indexOf(currentHost);
   if (wantActive && idx !== -1) {
     hosts.splice(idx, 1);
   } else if (!wantActive && idx === -1) {
     hosts.push(currentHost);
   } else {
-    return; // no change
+    return;
   }
-  await setDisabledHosts(hosts);
+  await setSessionDisabledHosts(hosts);
   els.reloadHint.classList.add("visible");
   await refresh();
 }
 
-async function removeHost(host) {
-  const hosts = await getDisabledHosts();
-  const filtered = hosts.filter((h) => h !== host);
-  await setDisabledHosts(filtered);
-  if (host === currentHost) {
-    els.reloadHint.classList.add("visible");
+async function removeTrustedHost(host) {
+  const hosts = await getTrustedHosts();
+  await setTrustedHosts(hosts.filter((h) => h !== host));
+  await refresh();
+}
+
+function showAddRow() {
+  els.addRow.hidden = false;
+  els.addBtn.hidden = true;
+  els.addInput.value = currentHost || "";
+  els.addInput.classList.remove("invalid");
+  els.addInput.focus();
+  els.addInput.select();
+}
+
+function hideAddRow() {
+  els.addRow.hidden = true;
+  els.addBtn.hidden = false;
+}
+
+async function confirmAdd() {
+  const host = sanitizeHostInput(els.addInput.value);
+  if (!isValidHost(host)) {
+    els.addInput.classList.add("invalid");
+    return;
   }
+  const hosts = await getTrustedHosts();
+  if (!hosts.includes(host)) {
+    hosts.push(host);
+    await setTrustedHosts(hosts);
+  }
+  hideAddRow();
   await refresh();
 }
 
 async function init() {
-  const [tab] = await chrome.tabs.query({
-    active: true,
-    currentWindow: true,
-  });
+  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   currentTab = tab || null;
   currentHost = tab ? hostnameFromUrl(tab.url || "") : null;
 
+  if (!currentHost) els.toggle.disabled = true;
+
   els.toggle.addEventListener("change", onToggle);
   els.reloadBtn.addEventListener("click", () => {
-    if (currentTab && currentTab.id != null) {
+    if (currentTab?.id != null) {
       chrome.tabs.reload(currentTab.id);
       window.close();
     }
   });
 
-  // Disable the toggle on restricted pages.
-  if (!currentHost) {
-    els.toggle.disabled = true;
-  }
+  els.addBtn.addEventListener("click", showAddRow);
+  els.addConfirm.addEventListener("click", confirmAdd);
+  els.addCancel.addEventListener("click", hideAddRow);
+  els.addInput.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") confirmAdd();
+    if (e.key === "Escape") hideAddRow();
+  });
+  els.addInput.addEventListener("input", () => {
+    els.addInput.classList.remove("invalid");
+  });
 
   await refresh();
 }
