@@ -1,0 +1,249 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Free the Right-Click</title>
+    <style>
+      :root {
+        color-scheme: light dark;
+        --bg: #ffffff;
+        --fg: #1a1a1a;
+        --muted: #6b7280;
+        --border: #ececec;
+        --accent: #1f7a3a;
+        --accent-soft: #e6f5ea;
+        --danger: #b91c1c;
+        --row-hover: #f7f7f7;
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --bg: #1e1e1e;
+          --fg: #e6e6e6;
+          --muted: #9ca3af;
+          --border: #333333;
+          --accent: #5fbf7a;
+          --accent-soft: #143a1f;
+          --danger: #f87171;
+          --row-hover: #262626;
+        }
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        width: 340px;
+        margin: 0;
+        font: 13px/1.45 system-ui, -apple-system, Segoe UI, sans-serif;
+        background: var(--bg);
+        color: var(--fg);
+      }
+      header {
+        padding: 14px 16px 10px;
+        border-bottom: 1px solid var(--border);
+      }
+      h1 {
+        font-size: 14px;
+        margin: 0 0 2px;
+        font-weight: 600;
+      }
+      .sub {
+        font-size: 11px;
+        color: var(--muted);
+      }
+      section {
+        padding: 14px 16px;
+      }
+      section + section {
+        border-top: 1px solid var(--border);
+      }
+      .site-row {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+      }
+      .site-info {
+        flex: 1;
+        min-width: 0;
+      }
+      .site-host {
+        font-size: 13px;
+        font-weight: 500;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .site-state {
+        font-size: 11px;
+        color: var(--muted);
+        margin-top: 1px;
+      }
+      .state-on {
+        color: var(--accent);
+      }
+
+      /* Toggle switch */
+      .toggle {
+        position: relative;
+        display: inline-block;
+        width: 38px;
+        height: 22px;
+        flex-shrink: 0;
+      }
+      .toggle input {
+        opacity: 0;
+        width: 0;
+        height: 0;
+      }
+      .slider {
+        position: absolute;
+        cursor: pointer;
+        inset: 0;
+        background: #cfcfcf;
+        border-radius: 999px;
+        transition: background 0.15s;
+      }
+      @media (prefers-color-scheme: dark) {
+        .slider {
+          background: #4a4a4a;
+        }
+      }
+      .slider::before {
+        content: '';
+        position: absolute;
+        height: 16px;
+        width: 16px;
+        left: 3px;
+        top: 3px;
+        background: #fff;
+        border-radius: 50%;
+        transition: transform 0.15s;
+      }
+      .toggle input:checked + .slider {
+        background: var(--accent);
+      }
+      .toggle input:checked + .slider::before {
+        transform: translateX(16px);
+      }
+      .toggle input:disabled + .slider {
+        opacity: 0.4;
+        cursor: not-allowed;
+      }
+
+      .reload-hint {
+        margin-top: 10px;
+        font-size: 11px;
+        color: var(--muted);
+        display: none;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+      }
+      .reload-hint.visible {
+        display: flex;
+      }
+      .reload-btn {
+        font: inherit;
+        font-size: 11px;
+        background: var(--accent);
+        color: #fff;
+        border: 0;
+        border-radius: 4px;
+        padding: 4px 10px;
+        cursor: pointer;
+      }
+      .reload-btn:hover {
+        filter: brightness(1.05);
+      }
+
+      .restricted {
+        font-size: 12px;
+        color: var(--muted);
+        font-style: italic;
+      }
+
+      h2 {
+        font-size: 11px;
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+        color: var(--muted);
+        margin: 0 0 8px;
+      }
+      .disabled-list {
+        max-height: 160px;
+        overflow-y: auto;
+        margin: 0 -4px;
+      }
+      .disabled-item {
+        display: flex;
+        align-items: center;
+        padding: 5px 8px 5px 6px;
+        border-radius: 4px;
+        font-size: 12px;
+      }
+      .disabled-item:hover {
+        background: var(--row-hover);
+      }
+      .disabled-item .host {
+        flex: 1;
+        min-width: 0;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .remove-btn {
+        background: transparent;
+        border: 0;
+        color: var(--muted);
+        cursor: pointer;
+        font-size: 16px;
+        line-height: 1;
+        padding: 2px 6px;
+        border-radius: 4px;
+      }
+      .remove-btn:hover {
+        color: var(--danger);
+        background: var(--row-hover);
+      }
+      .empty {
+        font-size: 12px;
+        color: var(--muted);
+        font-style: italic;
+        padding: 2px 4px;
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>Free the Right-Click</h1>
+      <div class="sub">Restores right-click, selection, and copy/paste.</div>
+    </header>
+
+    <section id="current-site-section">
+      <div id="current-site-row" class="site-row" hidden>
+        <div class="site-info">
+          <div class="site-host" id="current-host">—</div>
+          <div class="site-state" id="current-state">—</div>
+        </div>
+        <label class="toggle" title="Toggle for this site">
+          <input type="checkbox" id="site-toggle" />
+          <span class="slider"></span>
+        </label>
+      </div>
+      <div id="restricted-msg" class="restricted" hidden>
+        This page is restricted — Chrome doesn't let extensions run here.
+      </div>
+      <div class="reload-hint" id="reload-hint">
+        <span>Reload the page to apply changes.</span>
+        <button class="reload-btn" id="reload-btn">Reload</button>
+      </div>
+    </section>
+
+    <section>
+      <h2>Trusted domains</h2>
+      <div class="disabled-list" id="disabled-list"></div>
+    </section>
+
+    <script src="popup.js"></script>
+  </body>
+</html>
