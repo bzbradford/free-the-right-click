@@ -63,7 +63,7 @@ hostnames, not origins.)
 | Event                    | Strategy   | Notes                                                                                          |
 | ------------------------ | ---------- | ---------------------------------------------------------------------------------------------- |
 | `contextmenu`            | Aggressive | Page listeners never run. Disable per-site if you want a custom menu.                          |
-| `selectstart`            | Aggressive | Text becomes selectable again.                                                                 |
+| `selectstart`            | Aggressive\* | Text becomes selectable again.                                                               |
 | `dragstart`              | Aggressive | Images/links draggable again.                                                                  |
 | `keydown` (Ctrl+C/V/X/A) | Aggressive | Page can't cancel the shortcut.                                                                |
 | `copy` / `cut` / `paste` | Smart      | preventDefault is committed only when the page _also_ interacts with clipboardData. See below. |
@@ -91,6 +91,23 @@ Result:
 
 `returnValue = false` and inline `onpaste="return false"` are handled
 the same way via a wrapped `returnValue` accessor.
+
+### The map/drag-widget exception (\*)
+
+Pan/drag widgets (Leaflet, Mapbox GL, OpenLayers, resizable split-panes,
+custom sliders, ...) rely on `selectstart` too — not to block copying,
+but to stop the browser from highlighting text while you drag them.
+Killing `selectstart` unconditionally breaks that: the widget's own
+`preventDefault()` never runs, so dragging a map selects the page text
+underneath it.
+
+We tell the two apart natively, without a site whitelist: if the
+element the drag started on has a `cursor` of `grab`, `grabbing`,
+`move`, `all-scroll`, or one of the `*-resize` values, we treat it as a
+drag widget and let the page's own `selectstart` handling win instead
+of suppressing it. Anti-copy scripts have no reason to set those
+cursors on body text, so this is a low-risk, per-interaction exception
+rather than a per-site one.
 
 ## Permissions
 

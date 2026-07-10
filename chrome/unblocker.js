@@ -44,9 +44,51 @@
   // No realistic non-blocking use case for these on normal pages. Kill
   // page-level listeners by stopping immediate propagation in the
   // capture phase before they ever fire.
+  //
+  // Exception: selectstart is also how pan/drag widgets (Leaflet, Mapbox
+  // GL, OpenLayers, resizable split-panes, ...) stop the browser from
+  // highlighting text *while you drag them*. If we always swallow
+  // selectstart, those widgets' own preventDefault never runs and
+  // dragging the widget selects page text as a side effect. We tell
+  // "drag widget" apart from "anti-copy blocker" by checking the cursor
+  // CSS on the element the drag started on: grab/grabbing/move/resize
+  // cursors are a strong, native signal for "this is a draggable
+  // surface," and content blockers have no reason to set them on body
+  // text. If the cursor matches, we let the page's own selectstart
+  // handling win instead of killing it.
   const aggressiveEvents = ["contextmenu", "selectstart", "dragstart"];
 
+  const dragCursors = new Set([
+    "grab",
+    "grabbing",
+    "-webkit-grab",
+    "-webkit-grabbing",
+    "move",
+    "all-scroll",
+    "col-resize",
+    "row-resize",
+    "ew-resize",
+    "ns-resize",
+    "nesw-resize",
+    "nwse-resize",
+    "n-resize",
+    "s-resize",
+    "e-resize",
+    "w-resize",
+  ]);
+
+  function isDragWidgetTarget(target) {
+    if (!target || target.nodeType !== 1) return false;
+    try {
+      const cursor = getComputedStyle(target).cursor;
+      return !!cursor && dragCursors.has(cursor.split(",")[0].trim());
+    } catch (_) {
+      return false;
+    }
+  }
+
   function stopAggressively(e) {
+    if (e.type === "selectstart" && isDragWidgetTarget(e.target)) return;
     e.stopImmediatePropagation();
   }
 
