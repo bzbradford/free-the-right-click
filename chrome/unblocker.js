@@ -22,6 +22,22 @@
 (function () {
   "use strict";
 
+  // The popup injects this file directly when you enable a site, so it can
+  // land in a context the registered content script already ran in (enable,
+  // disable, re-enable without a reload). Bail out rather than stacking a
+  // second set of capture listeners.
+  if (window.__ftrcInstalled) return;
+  try {
+    Object.defineProperty(window, "__ftrcInstalled", {
+      value: true,
+      configurable: false,
+      writable: false,
+      enumerable: false,
+    });
+  } catch (_) {
+    window.__ftrcInstalled = true;
+  }
+
   // Stash originals before any page script can monkey-patch them.
   const realPreventDefault = Event.prototype.preventDefault;
   const realAddEventListener = EventTarget.prototype.addEventListener;

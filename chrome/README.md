@@ -14,55 +14,80 @@ context menus or clipboard handlers.
 
 ## Usage
 
-**On by default everywhere.** The extension activates on every page
-automatically — no configuration needed for the common case.
+**Off by default, everywhere.** Right-click blocking is annoying but
+rarely worth pre-empting, and running on every page means occasionally
+interfering with apps that use `contextmenu` legitimately. So the
+extension does nothing until you ask it to.
 
-**Per-site disable.** If you land on an app that has its own custom
-right-click menu (WordPress Gutenberg editor, Google Docs, Figma, Notion,
-etc.) and the extension is interfering with it, click the toolbar icon
-and toggle off "Active here." Reload the page to apply.
+**Turn it on per site.** When a page blocks right-click, selection, or
+copy/paste, click the toolbar icon and flip the toggle. The unblocker is
+injected into the current tab immediately — no reload needed — and the
+host is saved, so it stays on for that site from then on.
 
-The popup also shows a list of all sites you've disabled and lets you
-re-enable any of them with one click.
+Enabling a domain covers its subdomains too: turning it on for
+`example.com` also covers `docs.example.com`.
+
+The popup lists every site you've enabled. Remove one with the `×`, or
+add a domain by hand with `+` (useful for a site you're not currently
+on). Toggling a site back off takes effect on the next page load.
 
 ## Architecture
 
 ```
 manifest.json   MV3 manifest. No static content_scripts — the service
-                worker registers them dynamically so it can adjust
-                excludeMatches at runtime.
+                worker registers them dynamically so the set of matched
+                hosts can change at runtime.
 
-background.js   Service worker. Reads `disabledHosts` from
+background.js   Service worker. Reads `enabledHosts` from
                 chrome.storage.local and (re)registers the unblocker via
-                chrome.scripting.registerContentScripts with the right
-                excludeMatches. Re-syncs whenever storage changes.
+                chrome.scripting.registerContentScripts with those hosts
+                as `matches`. Re-syncs whenever storage changes.
 
 popup.html      Toolbar popup UI.
-popup.js        Popup logic. Writes to chrome.storage.local; the service
-                worker picks up the change.
+popup.js        Popup logic. Writes `enabledHosts` to chrome.storage.local
+                and injects the unblocker into the current tab on enable.
 
-unblocker.js    The actual unblocker, injected MAIN-world at document_start
-                in every frame. (Unchanged from v1.)
+unblocker.js    The actual unblocker, injected MAIN-world at
+                document_start in every frame.
 ```
 
-The dynamic-registration trick: instead of declaring
-`"content_scripts"` statically in the manifest with a fixed set of
-matches, we register the script from the service worker with
-`matches: ['<all_urls>']` and `excludeMatches: [...disabled origin
-patterns]`. Whenever the user toggles a site, the popup writes to
-storage, the service worker re-runs registration with updated
-excludeMatches, and from then on the script no longer injects into that
-host.
+The dynamic-registration trick: instead of declaring `"content_scripts"`
+statically in the manifest, we register the script from the service
+worker with `matches` built from the enabled-hosts list. Toggling a site
+writes to storage, the service worker re-runs registration, and the
+script starts injecting into that host. With an empty list there's no
+registration at all — Chrome rejects an empty `matches` array, so
+"nothing enabled" is expressed as "script unregistered".
 
-Each disabled host is converted to a `*://hostname/*` pattern so both
-HTTP and HTTPS variants are excluded together. (Most users think in
+Each enabled host becomes a `*://host/*` plus `*://*.host/*` pair, so
+HTTP/HTTPS and subdomains are covered together. (Most users think in
 hostnames, not origins.)
+
+### Immediate injection
+
+A registered content script only reaches pages loaded *after*
+registration, so enabling a site would otherwise require a reload — right
+when you're actively annoyed at the page. The popup therefore also calls
+`chrome.scripting.executeScript` on the current tab.
+
+Injecting late still works because the unblocker's suppression is
+capture-phase listeners on `window`, which run before listeners attached
+to `document` or any element regardless of registration order. Clipboard
+and keydown patching are per-event and equally order-independent. The
+only thing a late injection can't undo is an inline `on*` handler that
+already fired — `stripInline` runs on injection, so subsequent events are
+fine.
+
+Because the same context can be injected twice (enable, disable,
+re-enable without a reload), the unblocker sets a non-configurable
+`window.__ftrcInstalled` flag and returns early on a second run rather
+than stacking duplicate listeners.
 
 ## What the unblocker does
 
 | Event                    | Strategy   | Notes                                                                                          |
 | ------------------------ | ---------- | ---------------------------------------------------------------------------------------------- |
-| `contextmenu`            | Aggressive | Page listeners never run. Disable per-site if you want a custom menu.                          |
+| `contextmenu`            | Aggressive | Page listeners never run.                                                                      |
 | `selectstart`            | Aggressive\* | Text becomes selectable again.                                                               |
 | `dragstart`              | Aggressive | Images/links draggable again.                                                                  |
 | `keydown` (Ctrl+C/V/X/A) | Aggressive | Page can't cancel the shortcut.                                                                |
@@ -111,15 +136,17 @@ rather than a per-site one.
 
 ## Permissions
 
-- `scripting` — for `chrome.scripting.registerContentScripts`
-- `storage` — for the per-site disabled list
+- `scripting` — for `registerContentScripts` and the on-enable
+  `executeScript`
+- `storage` — for the enabled-sites list
 - `activeTab` — to read the URL of the popup's tab
-- `<all_urls>` host permission — so the content script can be registered
-  for any site
+- `<all_urls>` host permission — the host set isn't known ahead of time,
+  so registration needs blanket host access even though the script only
+  ever runs on sites you've enabled
 
 No network access, no analytics, no remote code. The unblocker file is
 listed under `web_accessible_resources` only because Chrome requires it
-when injecting via dynamic scripting into the MAIN world.
+when injecting into the MAIN world.
 
 ## Known limitations
 
@@ -129,22 +156,12 @@ when injecting via dynamic scripting into the MAIN world.
 - Chrome's own restricted pages (`chrome://`, `chrome-extension://`, the
   Web Store) aren't scriptable. The popup detects this and shows a
   message.
-- Existing tabs at install time need a reload before the unblocker is
-  active. New tabs are fine.
+- Turning a site *off* needs a page reload; the already-injected
+  listeners can't be removed from a live page.
 
-## Sites where you probably want to disable
+## Upgrading from 1.x
 
-These all have legitimate custom right-click menus or contextmenu-driven
-UX. Disable per-site if you use them and notice missing behavior:
-
-- WordPress Gutenberg admin (`*.wordpress.com`, your own
-  `*/wp-admin/post.php` host)
-- `docs.google.com`, `sheets.google.com`, `slides.google.com`
-- `figma.com`
-- `notion.so`
-- `vscode.dev`, `github.dev`
-- Any other Monaco/CodeMirror-based editor on the web
-
-Copy/paste keep working everywhere thanks to the smart-clipboard logic —
-the per-site disable is only needed when _contextmenu_ is the thing the
-app cares about.
+v1 ran everywhere and kept a list of hosts to skip. v2 inverts that: the
+list is now hosts to run on, starting empty. The old `trustedHosts` key
+can't be carried over meaningfully, so it's dropped on update and you
+start from off-everywhere.

@@ -1,10 +1,10 @@
-// Popup script — manages the current-tab session toggle and the permanent
-// trusted domains list. Session state lives in chrome.storage.session;
-// trusted hosts live in chrome.storage.local. The background service worker
-// picks up changes to either and re-registers the content script.
+// Popup script — the extension is off by default; this is where a site gets
+// turned on. The toggle adds/removes the current host in `enabledHosts`
+// (chrome.storage.local) and the service worker re-registers the content
+// script from that list. Enabling also injects the unblocker into the
+// current tab right away so it takes effect without a reload.
 
-const STORAGE_KEY = "trustedHosts";
-const SESSION_KEY = "sessionDisabledHosts";
+const STORAGE_KEY = "enabledHosts";
 
 const els = {
   row: document.getElementById("current-site-row"),
@@ -14,7 +14,7 @@ const els = {
   restricted: document.getElementById("restricted-msg"),
   reloadHint: document.getElementById("reload-hint"),
   reloadBtn: document.getElementById("reload-btn"),
-  list: document.getElementById("trusted-list"),
+  list: document.getElementById("enabled-list"),
   addBtn: document.getElementById("add-btn"),
   addRow: document.getElementById("add-row"),
   addInput: document.getElementById("add-input"),
@@ -38,9 +38,9 @@ function hostnameFromUrl(url) {
 function sanitizeHostInput(raw) {
   let h = raw.trim().toLowerCase();
   h = h.replace(/^[a-z*]+:\/\//, ""); // strip protocol (http://, https://, *://)
-  h = h.replace(/^\*\./, "");          // strip leading *. — wildcard already applied
-  h = h.replace(/[/?#].*$/, "");       // strip path, query, fragment
-  h = h.replace(/:\d+$/, "");          // strip port
+  h = h.replace(/^\*\./, ""); // strip leading *. — wildcard already applied
+  h = h.replace(/[/?#].*$/, ""); // strip path, query, fragment
+  h = h.replace(/:\d+$/, ""); // strip port
   return h;
 }
 
@@ -48,40 +48,30 @@ function isValidHost(h) {
   return typeof h === "string" && h.length > 0 && /^[a-z0-9.\-]+$/i.test(h);
 }
 
-async function getTrustedHosts() {
+async function getEnabledHosts() {
   const result = await chrome.storage.local.get(STORAGE_KEY);
   const hosts = result[STORAGE_KEY];
   return Array.isArray(hosts) ? hosts.slice() : [];
 }
 
-async function setTrustedHosts(hosts) {
+async function setEnabledHosts(hosts) {
   const cleaned = Array.from(
     new Set(hosts.map((h) => String(h).toLowerCase().trim()).filter(Boolean)),
   ).sort();
   await chrome.storage.local.set({ [STORAGE_KEY]: cleaned });
 }
 
-async function getSessionDisabledHosts() {
-  const result = await chrome.storage.session.get(SESSION_KEY);
-  const hosts = result[SESSION_KEY];
-  return Array.isArray(hosts) ? hosts.slice() : [];
+// An entry covers a host if it matches exactly or the host is a subdomain of
+// it — the same reach as the `*://*.entry/*` match pattern we register.
+function coveringEntries(host, enabledHosts) {
+  return enabledHosts.filter((h) => host === h || host.endsWith("." + h));
 }
 
-async function setSessionDisabledHosts(hosts) {
-  const cleaned = Array.from(
-    new Set(hosts.map((h) => String(h).toLowerCase().trim()).filter(Boolean)),
-  ).sort();
-  await chrome.storage.session.set({ [SESSION_KEY]: cleaned });
+function isEnabledHost(host, enabledHosts) {
+  return coveringEntries(host, enabledHosts).length > 0;
 }
 
-// Returns true if host matches a trusted entry (exact or subdomain of entry).
-function isTrustedHost(host, trustedHosts) {
-  return trustedHosts.some(
-    (h) => host === h || host.endsWith("." + h),
-  );
-}
-
-function renderCurrentSite(host, trusted, sessionDisabled) {
+function renderCurrentSite(host, enabled) {
   if (!host) {
     els.row.hidden = true;
     els.restricted.hidden = false;
@@ -91,21 +81,14 @@ function renderCurrentSite(host, trusted, sessionDisabled) {
   els.row.hidden = false;
   els.host.textContent = host;
 
-  if (trusted) {
-    els.toggle.checked = false;
-    els.toggle.disabled = true;
-    els.state.textContent = "Trusted domain";
-    els.state.className = "site-state";
-  } else if (sessionDisabled) {
-    els.toggle.checked = false;
-    els.toggle.disabled = false;
-    els.state.textContent = "Paused this session";
-    els.state.className = "site-state";
-  } else {
-    els.toggle.checked = true;
-    els.toggle.disabled = false;
-    els.state.textContent = "Active here";
+  els.toggle.checked = enabled;
+  els.toggle.disabled = false;
+  if (enabled) {
+    els.state.textContent = "On for this site";
     els.state.className = "site-state state-on";
+  } else {
+    els.state.textContent = "Off — click to enable";
+    els.state.className = "site-state";
   }
 }
 
@@ -114,13 +97,13 @@ function renderList(hosts) {
   if (!hosts.length) {
     const empty = document.createElement("div");
     empty.className = "empty";
-    empty.textContent = "No trusted domains.";
+    empty.textContent = "No sites enabled yet.";
     els.list.appendChild(empty);
     return;
   }
   for (const host of hosts) {
     const row = document.createElement("div");
-    row.className = "trusted-item";
+    row.className = "enabled-item";
 
     const label = document.createElement("span");
     label.className = "host";
@@ -134,7 +117,7 @@ function renderList(hosts) {
     btn.textContent = "×";
     btn.title = `Remove ${host}`;
     btn.setAttribute("aria-label", `Remove ${host}`);
-    btn.addEventListener("click", () => removeTrustedHost(host));
+    btn.addEventListener("click", () => removeEnabledHost(host));
     row.appendChild(btn);
 
     els.list.appendChild(row);
@@ -142,38 +125,65 @@ function renderList(hosts) {
 }
 
 async function refresh() {
-  const [trusted, session] = await Promise.all([
-    getTrustedHosts(),
-    getSessionDisabledHosts(),
-  ]);
-  renderList(trusted);
+  const enabled = await getEnabledHosts();
+  renderList(enabled);
   renderCurrentSite(
     currentHost,
-    currentHost ? isTrustedHost(currentHost, trusted) : false,
-    currentHost ? session.includes(currentHost) : false,
+    currentHost ? isEnabledHost(currentHost, enabled) : false,
   );
+}
+
+function showReloadHint(text) {
+  els.reloadHint.querySelector("span").textContent = text;
+  els.reloadHint.classList.add("visible");
+}
+
+// The registered content script only reaches pages loaded after registration,
+// so enabling a site would otherwise need a reload. Injecting by hand covers
+// the page you're already on: the unblocker's capture-phase listeners on
+// `window` still run ahead of the page's own handlers no matter how late they
+// are attached, so contextmenu, selection, drag, and clipboard all recover
+// immediately. Only inline on* handlers already fired are beyond reach.
+async function injectNow() {
+  if (currentTab?.id == null) return false;
+  try {
+    await chrome.scripting.executeScript({
+      target: { tabId: currentTab.id, allFrames: true },
+      files: ["unblocker.js"],
+      world: "MAIN",
+      injectImmediately: true,
+    });
+    return true;
+  } catch (_) {
+    return false;
+  }
 }
 
 async function onToggle() {
   if (!currentHost) return;
-  const wantActive = els.toggle.checked;
-  const hosts = await getSessionDisabledHosts();
-  const idx = hosts.indexOf(currentHost);
-  if (wantActive && idx !== -1) {
-    hosts.splice(idx, 1);
-  } else if (!wantActive && idx === -1) {
-    hosts.push(currentHost);
+  const wantEnabled = els.toggle.checked;
+  const hosts = await getEnabledHosts();
+
+  if (wantEnabled) {
+    if (!hosts.includes(currentHost)) hosts.push(currentHost);
+    await setEnabledHosts(hosts);
+    const injected = await injectNow();
+    if (!injected) showReloadHint("Reload the page to apply.");
   } else {
-    return;
+    // Drop the exact entry and any parent-domain entry covering this host —
+    // leaving `example.com` behind while switching off `sub.example.com`
+    // would leave the toggle stuck on.
+    const covering = new Set(coveringEntries(currentHost, hosts));
+    await setEnabledHosts(hosts.filter((h) => !covering.has(h)));
+    showReloadHint("Reload the page to stop unblocking it.");
   }
-  await setSessionDisabledHosts(hosts);
-  els.reloadHint.classList.add("visible");
+
   await refresh();
 }
 
-async function removeTrustedHost(host) {
-  const hosts = await getTrustedHosts();
-  await setTrustedHosts(hosts.filter((h) => h !== host));
+async function removeEnabledHost(host) {
+  const hosts = await getEnabledHosts();
+  await setEnabledHosts(hosts.filter((h) => h !== host));
   await refresh();
 }
 
@@ -197,10 +207,10 @@ async function confirmAdd() {
     els.addInput.classList.add("invalid");
     return;
   }
-  const hosts = await getTrustedHosts();
+  const hosts = await getEnabledHosts();
   if (!hosts.includes(host)) {
     hosts.push(host);
-    await setTrustedHosts(hosts);
+    await setEnabledHosts(hosts);
   }
   hideAddRow();
   await refresh();

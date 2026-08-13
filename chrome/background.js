@@ -1,14 +1,15 @@
 // Service worker for Free the Right-Click.
 //
-// Owns the dynamic content-script registration. Reads trusted hosts from
-// chrome.storage.local and session-disabled hosts from chrome.storage.session,
-// then registers the unblocker with excludeMatches covering both.
+// Owns the dynamic content-script registration. The extension is off by
+// default: the unblocker is registered only for the hosts the user has
+// explicitly enabled, read from chrome.storage.local. With no enabled
+// hosts the script isn't registered at all.
 
 const SCRIPT_ID = "ftrc-unblocker";
-const STORAGE_KEY = "trustedHosts";
-const SESSION_KEY = "sessionDisabledHosts";
+const STORAGE_KEY = "enabledHosts";
+const LEGACY_KEY = "trustedHosts";
 
-async function getTrustedHosts() {
+async function getEnabledHosts() {
   try {
     const result = await chrome.storage.local.get(STORAGE_KEY);
     const hosts = result[STORAGE_KEY];
@@ -21,35 +22,32 @@ async function getTrustedHosts() {
   }
 }
 
-async function getSessionDisabledHosts() {
-  try {
-    const result = await chrome.storage.session.get(SESSION_KEY);
-    const hosts = result[SESSION_KEY];
-    if (!Array.isArray(hosts)) return [];
-    return hosts.filter(
-      (h) => typeof h === "string" && /^[a-z0-9.\-]+$/i.test(h),
-    );
-  } catch (_) {
-    return [];
-  }
-}
-
-function hostToExcludePatterns(host) {
+function hostToMatchPatterns(host) {
   return [`*://${host}/*`, `*://*.${host}/*`];
 }
 
+async function unregister() {
+  try {
+    await chrome.scripting.unregisterContentScripts({ ids: [SCRIPT_ID] });
+  } catch (_) {
+    // Not registered — nothing to do.
+  }
+}
+
 async function syncRegistration() {
-  const [trusted, session] = await Promise.all([
-    getTrustedHosts(),
-    getSessionDisabledHosts(),
-  ]);
-  const allExcluded = [...new Set([...trusted, ...session])];
-  const excludeMatches = allExcluded.flatMap(hostToExcludePatterns);
+  const hosts = await getEnabledHosts();
+  const matches = [...new Set(hosts)].flatMap(hostToMatchPatterns);
+
+  // registerContentScripts rejects an empty `matches` array, so "no enabled
+  // hosts" has to be expressed as "no registration at all".
+  if (!matches.length) {
+    await unregister();
+    return;
+  }
 
   const scriptDef = {
     id: SCRIPT_ID,
-    matches: ["<all_urls>"],
-    ...(excludeMatches.length ? { excludeMatches } : {}),
+    matches,
     js: ["unblocker.js"],
     runAt: "document_start",
     allFrames: true,
@@ -69,9 +67,7 @@ async function syncRegistration() {
     }
   } catch (e) {
     console.warn("[FTRC] update failed, retrying with fresh register", e);
-    try {
-      await chrome.scripting.unregisterContentScripts({ ids: [SCRIPT_ID] });
-    } catch (_) {}
+    await unregister();
     try {
       await chrome.scripting.registerContentScripts([scriptDef]);
     } catch (e2) {
@@ -80,28 +76,20 @@ async function syncRegistration() {
   }
 }
 
-const DEFAULT_TRUSTED_HOSTS = ["google.com", "wisc.edu"];
-
-async function initDefaultHosts() {
-  const result = await chrome.storage.local.get(STORAGE_KEY);
-  if (!Array.isArray(result[STORAGE_KEY])) {
-    await chrome.storage.local.set({ [STORAGE_KEY]: DEFAULT_TRUSTED_HOSTS });
-  }
-}
-
 chrome.runtime.onInstalled.addListener(async (details) => {
-  if (details.reason === "install") {
-    await initDefaultHosts();
+  if (details.reason === "update") {
+    // v1 kept an inverted list (hosts to skip). The meaning of the list has
+    // flipped, so the old data can't be carried over — drop it.
+    try {
+      await chrome.storage.local.remove(LEGACY_KEY);
+    } catch (_) {}
   }
   syncRegistration();
 });
 chrome.runtime.onStartup.addListener(syncRegistration);
 
 chrome.storage.onChanged.addListener((changes, area) => {
-  if (
-    (area === "local" && changes[STORAGE_KEY]) ||
-    (area === "session" && changes[SESSION_KEY])
-  ) {
+  if (area === "local" && changes[STORAGE_KEY]) {
     syncRegistration();
   }
 });
